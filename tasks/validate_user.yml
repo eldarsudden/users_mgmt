@@ -1,0 +1,114 @@
+---
+- name: Validate account without exposing password hashes
+  no_log: true
+  block:
+    - name: Require an account mapping
+      ansible.builtin.assert:
+        that:
+          - users_mgmt_user is mapping
+
+    - name: Validate account fields
+      ansible.builtin.assert:
+        that:
+          - users_mgmt_user.name is defined
+          - users_mgmt_user.name is string
+          - users_mgmt_user.name is match('^[a-z_][a-z0-9_.-]*[$]?$')
+          - users_mgmt_user.name | length <= 32
+          - users_mgmt_user.name not in ['root'] + users_mgmt_protected_users
+          - users_mgmt_user.state | default('present') in ['present', 'absent']
+          - users_mgmt_user.uid is not defined or (users_mgmt_user.uid is integer and users_mgmt_user.uid > 0)
+          - users_mgmt_user.update_password | default('on_create') in ['always', 'on_create']
+          - users_mgmt_user.expires is not defined or users_mgmt_user.expires is number
+          - >-
+            users_mgmt_user.keys() | difference([
+              'name', 'state', 'uid', 'group', 'groups', 'append', 'comment',
+              'shell', 'home', 'create_home', 'move_home', 'system', 'password',
+              'update_password', 'password_lock', 'expires', 'remove', 'force',
+              'ssh_keys', 'sudo', 'sudo_nopasswd'
+            ]) | length == 0
+        fail_msg: Invalid account definition. See README.md for supported fields.
+
+    - name: Validate boolean account options
+      ansible.builtin.assert:
+        that:
+          - users_mgmt_user[users_mgmt_option] is boolean
+      loop:
+        - append
+        - create_home
+        - move_home
+        - system
+        - password_lock
+        - remove
+        - force
+        - sudo_nopasswd
+      loop_control:
+        loop_var: users_mgmt_option
+      when: users_mgmt_option in users_mgmt_user
+
+    - name: Validate text account options
+      ansible.builtin.assert:
+        that:
+          - users_mgmt_user[users_mgmt_option] is string
+          - "'\n' not in users_mgmt_user[users_mgmt_option]"
+          - "'\r' not in users_mgmt_user[users_mgmt_option]"
+          - "':' not in users_mgmt_user[users_mgmt_option]"
+      loop:
+        - group
+        - comment
+        - shell
+        - home
+        - password
+      loop_control:
+        loop_var: users_mgmt_option
+      when: users_mgmt_option in users_mgmt_user
+
+    - name: Require absolute home and shell paths
+      ansible.builtin.assert:
+        that:
+          - users_mgmt_user.home is not defined or (users_mgmt_user.home.startswith('/') and users_mgmt_user.home != '/')
+          - users_mgmt_user.shell is not defined or users_mgmt_user.shell.startswith('/')
+          - users_mgmt_user.password is not defined or users_mgmt_user.password is match('^(\$[^$]+\$.+|!.*|\*)$')
+          - users_mgmt_user.sudo_nopasswd is not defined or users_mgmt_user.sudo is defined
+
+    - name: Validate account list options
+      ansible.builtin.assert:
+        that:
+          - users_mgmt_user[users_mgmt_option] | type_debug == 'list'
+          - users_mgmt_user[users_mgmt_option] | reject('string') | list | length == 0
+      loop:
+        - groups
+        - ssh_keys
+        - sudo
+      loop_control:
+        loop_var: users_mgmt_option
+      when: users_mgmt_option in users_mgmt_user
+
+    - name: Validate supplementary group names
+      ansible.builtin.assert:
+        that:
+          - users_mgmt_value is match('^[a-z_][a-z0-9_.-]*[$]?$')
+          - users_mgmt_value | length <= 32
+      loop: "{{ users_mgmt_user.groups | default([]) }}"
+      loop_control:
+        loop_var: users_mgmt_value
+
+    - name: Require one public key or sudo command per entry
+      ansible.builtin.assert:
+        that:
+          - users_mgmt_value | trim | length > 0
+          - "'\n' not in users_mgmt_value"
+          - "'\r' not in users_mgmt_value"
+      loop: "{{ (users_mgmt_user.ssh_keys | default([])) + (users_mgmt_user.sudo | default([])) }}"
+      loop_control:
+        loop_var: users_mgmt_value
+
+    - name: Check references to groups marked for deletion
+      ansible.builtin.assert:
+        that:
+          - >-
+            (([users_mgmt_user.group] if users_mgmt_user.group is defined else [])
+            + (users_mgmt_user.groups | default([]))) | intersect(
+              users_mgmt_groups | selectattr('state', 'defined') |
+              selectattr('state', 'equalto', 'absent') | map(attribute='name') | list
+            ) | length == 0
+      when: users_mgmt_user.state | default('present') == 'present'

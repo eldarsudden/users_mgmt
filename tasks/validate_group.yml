@@ -1,0 +1,19 @@
+---
+- name: Require a group mapping
+  ansible.builtin.assert:
+    that:
+      - users_mgmt_group is mapping
+
+- name: Validate group fields
+  ansible.builtin.assert:
+    that:
+      - users_mgmt_group.name is defined
+      - users_mgmt_group.name is string
+      - users_mgmt_group.name is match('^[a-z_][a-z0-9_.-]*[$]?$')
+      - users_mgmt_group.name | length <= 32
+      - users_mgmt_group.name != 'root'
+      - users_mgmt_group.state | default('present') in ['present', 'absent']
+      - users_mgmt_group.gid is not defined or (users_mgmt_group.gid is integer and users_mgmt_group.gid > 0)
+      - users_mgmt_group.system is not defined or users_mgmt_group.system is boolean
+      - users_mgmt_group.keys() | difference(['name', 'state', 'gid', 'system']) | length == 0
+    fail_msg: Invalid group definition. See README.md for supported fields.

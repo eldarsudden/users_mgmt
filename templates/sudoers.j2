@@ -1,0 +1,2 @@
+# Managed by Ansible role users_mgmt
+{{ users_mgmt_user.name }} ALL=(ALL:ALL) {{ 'NOPASSWD: ' if users_mgmt_user.sudo_nopasswd | default(false) else 'PASSWD: ' }}{{ users_mgmt_user.sudo | join(', ') }}

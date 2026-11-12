@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: users_mgmt
+  author: users_mgmt maintainers
+  description: Manage local users, groups, SSH keys and sudo on Enterprise Linux 9/10
+  license: MIT
+  min_ansible_version: '2.10'
+  platforms:
+    - name: EL
+      versions:
+        - '9'
+        - '10'
+  galaxy_tags:
+    - users
+    - groups
+    - ssh
+    - sudo
+dependencies: []

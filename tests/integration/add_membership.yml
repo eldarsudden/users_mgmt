@@ -1,0 +1,14 @@
+---
+- name: Add membership outside the role
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Create additional group
+      ansible.builtin.group:
+        name: users_mgmt_extra
+    - name: Add additional membership
+      ansible.builtin.user:
+        name: users_mgmt_it
+        groups: [users_mgmt_extra]
+        append: true

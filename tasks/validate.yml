@@ -1,0 +1,59 @@
+---
+- name: Check platform and Ansible version
+  ansible.builtin.assert:
+    that:
+      - ansible_version.full is version('2.10', '>=')
+      - ansible_facts.os_family == 'RedHat'
+      - ansible_facts.distribution_major_version | string in ['9', '10']
+      - >-
+        ansible_facts.distribution_major_version | string != '10' or
+        ansible_version.full is version('2.16', '>=')
+    fail_msg: >-
+      This role requires EL9 with Ansible >= 2.10, or EL10 with
+      ansible-core >= 2.16 (system Python 3.12).
+
+- name: Check top-level variable types
+  ansible.builtin.assert:
+    that:
+      - users_mgmt_users | type_debug == 'list'
+      - users_mgmt_groups | type_debug == 'list'
+      - users_mgmt_protected_users | type_debug == 'list'
+      - users_mgmt_protected_users | reject('string') | list | length == 0
+    fail_msg: users_mgmt_users, users_mgmt_groups and users_mgmt_protected_users must be lists.
+
+- name: Validate group definitions
+  ansible.builtin.include_tasks: validate_group.yml
+  loop: "{{ users_mgmt_groups }}"
+  loop_control:
+    loop_var: users_mgmt_group
+
+- name: Validate account definitions
+  ansible.builtin.include_tasks: validate_user.yml
+  loop: "{{ users_mgmt_users }}"
+  loop_control:
+    loop_var: users_mgmt_user
+  no_log: true
+
+- name: Reject duplicate account and group names
+  ansible.builtin.assert:
+    that:
+      - >-
+        users_mgmt_users | map(attribute='name') | unique | list | length ==
+        users_mgmt_users | length
+      - >-
+        users_mgmt_groups | map(attribute='name') | unique | list | length ==
+        users_mgmt_groups | length
+    fail_msg: Managed account and group names must be unique.
+
+- name: Check sudo validator before changing accounts
+  ansible.builtin.stat:
+    path: /usr/sbin/visudo
+  register: users_mgmt_visudo
+  when: users_mgmt_users | selectattr('sudo', 'defined') | list | length > 0
+
+- name: Require installed sudo when sudo is managed
+  ansible.builtin.assert:
+    that:
+      - users_mgmt_visudo.stat.executable | default(false)
+    fail_msg: Install sudo before using the sudo field.
+  when: users_mgmt_users | selectattr('sudo', 'defined') | list | length > 0

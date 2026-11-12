@@ -1,0 +1,14 @@
+---
+- name: Load all role task files for syntax checking
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Load role
+      ansible.builtin.import_role:
+        name: users_mgmt
+    - name: Load account tasks
+      ansible.builtin.import_tasks: ../tasks/user.yml
+    - name: Load account validation
+      ansible.builtin.import_tasks: ../tasks/validate_user.yml
+    - name: Load group validation
+      ansible.builtin.import_tasks: ../tasks/validate_group.yml

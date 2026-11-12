@@ -1,0 +1,13 @@
+---
+# Loaded automatically for every host targeted by this example's playbook.
+users_mgmt_groups:
+  - name: operations
+    gid: 2000
+
+users_mgmt_users:
+  - name: deploy
+    state: present
+    uid: 2001
+    group: operations
+    comment: Shared account for all inventory hosts
+    shell: /bin/bash

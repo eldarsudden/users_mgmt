@@ -1,0 +1,89 @@
+---
+- name: Ensure account exists with requested attributes
+  ansible.builtin.user:
+    name: "{{ users_mgmt_user.name }}"
+    state: present
+    uid: "{{ users_mgmt_user.uid | default(omit) }}"
+    group: "{{ users_mgmt_user.group | default(omit) }}"
+    groups: "{{ (users_mgmt_user.groups | join(',')) if users_mgmt_user.groups is defined else omit }}"
+    append: "{{ users_mgmt_user.append | default(true) }}"
+    comment: "{{ users_mgmt_user.comment | default(omit) }}"
+    shell: "{{ users_mgmt_user.shell | default(omit) }}"
+    home: "{{ users_mgmt_user.home | default(omit) }}"
+    create_home: "{{ users_mgmt_user.create_home | default(true) }}"
+    move_home: "{{ users_mgmt_user.move_home | default(false) }}"
+    system: "{{ users_mgmt_user.system | default(false) }}"
+    password: "{{ users_mgmt_user.password | default(omit) }}"
+    update_password: "{{ users_mgmt_user.update_password | default('on_create') }}"
+    password_lock: "{{ users_mgmt_user.password_lock | default(omit) }}"
+    expires: "{{ users_mgmt_user.expires | default(omit) }}"
+  no_log: true
+
+- name: Manage SSH access when explicitly requested
+  when: users_mgmt_user.ssh_keys is defined
+  block:
+    - name: Read the actual account home and primary GID
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ users_mgmt_user.name }}"
+        fail_key: false
+
+    - name: Manage SSH files for an existing account
+      when: ansible_facts.getent_passwd[users_mgmt_user.name] is not none
+      block:
+        - name: Require a dedicated absolute home before managing SSH files
+          ansible.builtin.assert:
+            that:
+              - ansible_facts.getent_passwd[users_mgmt_user.name][4].startswith('/')
+              - ansible_facts.getent_passwd[users_mgmt_user.name][4] != '/'
+
+        - name: Create SSH directory
+          ansible.builtin.file:
+            path: "{{ ansible_facts.getent_passwd[users_mgmt_user.name][4] }}/.ssh"
+            state: directory
+            owner: "{{ users_mgmt_user.name }}"
+            group: "{{ ansible_facts.getent_passwd[users_mgmt_user.name][2] }}"
+            mode: '0700'
+
+        - name: Set the complete authorized keys file
+          ansible.builtin.template:
+            src: authorized_keys.j2
+            dest: "{{ ansible_facts.getent_passwd[users_mgmt_user.name][4] }}/.ssh/authorized_keys"
+            owner: "{{ users_mgmt_user.name }}"
+            group: "{{ ansible_facts.getent_passwd[users_mgmt_user.name][2] }}"
+            mode: '0600'
+
+    - name: Explain SSH check mode limitation for a new account
+      ansible.builtin.debug:
+        msg: "SSH files for {{ users_mgmt_user.name }} will be managed after the account is created."
+      when:
+        - ansible_check_mode
+        - ansible_facts.getent_passwd[users_mgmt_user.name] is none
+
+- name: Manage sudo when explicitly requested
+  when: users_mgmt_user.sudo is defined
+  block:
+    - name: Ensure sudo drop-in directory exists
+      ansible.builtin.file:
+        path: /etc/sudoers.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+      when: users_mgmt_user.sudo | length > 0
+
+    - name: Install validated sudo policy
+      ansible.builtin.template:
+        src: sudoers.j2
+        dest: "/etc/sudoers.d/90-users_mgmt-{{ users_mgmt_user.name | hash('sha256') }}"
+        owner: root
+        group: root
+        mode: '0440'
+        validate: /usr/sbin/visudo -cf %s
+      when: users_mgmt_user.sudo | length > 0
+
+    - name: Remove role-owned sudo policy when the command list is empty
+      ansible.builtin.file:
+        path: "/etc/sudoers.d/90-users_mgmt-{{ users_mgmt_user.name | hash('sha256') }}"
+        state: absent
+      when: users_mgmt_user.sudo | length == 0

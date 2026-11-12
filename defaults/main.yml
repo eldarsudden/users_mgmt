@@ -1,0 +1,7 @@
+---
+# Only explicitly listed accounts and groups are managed.
+users_mgmt_groups: []
+users_mgmt_users: []
+
+# Additional accounts which this role must never modify. root is always protected.
+users_mgmt_protected_users: []

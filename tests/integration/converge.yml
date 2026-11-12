@@ -1,0 +1,26 @@
+---
+- name: Configure disposable integration account
+  hosts: localhost
+  connection: local
+  become: false
+  vars:
+    users_mgmt_groups:
+      - name: users_mgmt_it
+        gid: 29123
+    users_mgmt_users:
+      - name: users_mgmt_it
+        uid: 29123
+        group: users_mgmt_it
+        groups: [wheel]
+        comment: Integration fixture
+        home: /srv/users_mgmt_it
+        shell: /bin/bash
+        password: '!'
+        ssh_keys:
+          - "{{ lookup('file', playbook_dir + '/../fixtures/test_ed25519.pub') }}"
+        sudo: [/usr/bin/id]
+        sudo_nopasswd: true
+  tasks:
+    - name: Apply role
+      ansible.builtin.import_role:
+        name: users_mgmt

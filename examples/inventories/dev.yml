@@ -1,0 +1,10 @@
+---
+all:
+  children:
+    linux:
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+      children:
+        development:
+          hosts:
+            dev-el9.example.com: {}

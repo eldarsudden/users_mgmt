@@ -1,0 +1,59 @@
+---
+- name: Gather required platform facts when missing
+  ansible.builtin.setup:
+    gather_subset:
+      - '!all'
+      - min
+  when: >-
+    ansible_facts.os_family is not defined or
+    ansible_facts.distribution_major_version is not defined
+
+- name: Validate all input before changing the host
+  ansible.builtin.import_tasks: validate.yml
+
+- name: Create managed groups
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    gid: "{{ item.gid | default(omit) }}"
+    system: "{{ item.system | default(false) }}"
+    state: present
+  loop: "{{ users_mgmt_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.state | default('present') == 'present'
+
+- name: Manage present accounts
+  ansible.builtin.include_tasks: user.yml
+  loop: "{{ users_mgmt_users }}"
+  loop_control:
+    loop_var: users_mgmt_user
+    label: "{{ users_mgmt_user.name }}"
+  when: users_mgmt_user.state | default('present') == 'present'
+  no_log: true
+
+- name: Remove role-owned sudo rules for absent accounts
+  ansible.builtin.file:
+    path: "/etc/sudoers.d/90-users_mgmt-{{ item.name | hash('sha256') }}"
+    state: absent
+  loop: "{{ users_mgmt_users }}"
+  when: item.state | default('present') == 'absent'
+  no_log: true
+
+- name: Remove explicitly absent accounts
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    state: absent
+    remove: "{{ item.remove | default(false) }}"
+    force: "{{ item.force | default(false) }}"
+  loop: "{{ users_mgmt_users }}"
+  when: item.state | default('present') == 'absent'
+  no_log: true
+
+- name: Remove explicitly absent groups after processing accounts
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    state: absent
+  loop: "{{ users_mgmt_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.state | default('present') == 'absent'

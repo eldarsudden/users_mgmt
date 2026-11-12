@@ -1,0 +1,6 @@
+---
+- name: Manage local accounts on every inventory host
+  hosts: all
+  become: true
+  roles:
+    - role: users_mgmt

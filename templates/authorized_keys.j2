@@ -1,0 +1,3 @@
+{% for key in users_mgmt_user.ssh_keys | unique(case_sensitive=true) %}
+{{ key }}
+{% endfor %}

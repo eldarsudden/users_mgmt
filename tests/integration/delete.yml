@@ -1,0 +1,46 @@
+---
+- name: Remove test accounts and groups while retaining home
+  hosts: localhost
+  connection: local
+  vars:
+    users_mgmt_groups:
+      - name: users_mgmt_it
+        state: absent
+      - name: users_mgmt_extra
+        state: absent
+    users_mgmt_users:
+      - name: users_mgmt_it
+        state: absent
+        remove: false
+  tasks:
+    - name: Apply role
+      ansible.builtin.import_role:
+        name: users_mgmt
+
+    - name: Read removed account
+      ansible.builtin.getent:
+        database: passwd
+        key: users_mgmt_it
+        fail_key: false
+
+    - name: Inspect retained home
+      ansible.builtin.stat:
+        path: /srv/users_mgmt_it
+      register: retained_home
+
+    - name: Inspect removed sudo policy
+      ansible.builtin.stat:
+        path: "/etc/sudoers.d/90-users_mgmt-{{ 'users_mgmt_it' | hash('sha256') }}"
+      register: sudo_file
+
+    - name: Assert explicit deletion preserves home
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.getent_passwd.users_mgmt_it is none
+          - retained_home.stat.isdir
+          - not sudo_file.stat.exists
+
+    - name: Clean up retained integration fixture
+      ansible.builtin.file:
+        path: /srv/users_mgmt_it
+        state: absent

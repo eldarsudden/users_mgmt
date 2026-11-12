@@ -1,0 +1,45 @@
+---
+- name: Revoke access explicitly
+  hosts: localhost
+  connection: local
+  vars:
+    users_mgmt_users:
+      - name: users_mgmt_it
+        groups: []
+        append: false
+        ssh_keys: []
+        sudo: []
+  tasks:
+    - name: Apply role
+      ansible.builtin.import_role:
+        name: users_mgmt
+
+    - name: Read authorized keys
+      ansible.builtin.slurp:
+        src: /srv/users_mgmt_it/.ssh/authorized_keys
+      register: keys
+
+    - name: Inspect sudo file
+      ansible.builtin.stat:
+        path: "/etc/sudoers.d/90-users_mgmt-{{ 'users_mgmt_it' | hash('sha256') }}"
+      register: sudo_file
+
+    - name: Read memberships
+      ansible.builtin.command: id -Gn users_mgmt_it
+      register: account_groups
+      changed_when: false
+
+    - name: Attempt revoked sudo access
+      ansible.builtin.command:
+        argv: [sudo, -u, users_mgmt_it, sudo, -n, /usr/bin/id, -u]
+      register: sudo_result
+      changed_when: false
+      failed_when: false
+
+    - name: Assert access was revoked
+      ansible.builtin.assert:
+        that:
+          - keys.content | b64decode | trim == ''
+          - not sudo_file.stat.exists
+          - account_groups.stdout.split() == ['users_mgmt_it']
+          - sudo_result.rc != 0

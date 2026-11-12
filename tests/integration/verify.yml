@@ -1,0 +1,61 @@
+---
+- name: Verify actual account state
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read passwd record
+      ansible.builtin.getent:
+        database: passwd
+        key: users_mgmt_it
+
+    - name: Read supplementary groups
+      ansible.builtin.command: id -Gn users_mgmt_it
+      register: account_groups
+      changed_when: false
+
+    - name: Read authorized keys
+      ansible.builtin.slurp:
+        src: /srv/users_mgmt_it/.ssh/authorized_keys
+      register: keys
+
+    - name: Inspect SSH directory
+      ansible.builtin.stat:
+        path: /srv/users_mgmt_it/.ssh
+      register: ssh_dir
+
+    - name: Inspect authorized keys permissions
+      ansible.builtin.stat:
+        path: /srv/users_mgmt_it/.ssh/authorized_keys
+      register: ssh_file
+
+    - name: Inspect role-owned sudo file
+      ansible.builtin.stat:
+        path: "/etc/sudoers.d/90-users_mgmt-{{ 'users_mgmt_it' | hash('sha256') }}"
+      register: sudo_file
+
+    - name: Exercise sudo as managed user
+      ansible.builtin.command:
+        argv: [sudo, -u, users_mgmt_it, sudo, -n, /usr/bin/id, -u]
+      register: sudo_result
+      changed_when: false
+
+    - name: Assert account, membership, key ownership and sudo access
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.getent_passwd.users_mgmt_it[1] == '29123'
+          - ansible_facts.getent_passwd.users_mgmt_it[2] == '29123'
+          - ansible_facts.getent_passwd.users_mgmt_it[4] == '/srv/users_mgmt_it'
+          - ansible_facts.getent_passwd.users_mgmt_it[5] == '/bin/bash'
+          - "'wheel' in account_groups.stdout.split()"
+          - >-
+            not (expect_extra | default(false) | bool) or
+            'users_mgmt_extra' in account_groups.stdout.split()
+          - keys.content | b64decode | trim == lookup('file', playbook_dir + '/../fixtures/test_ed25519.pub') | trim
+          - ssh_dir.stat.mode == '0700'
+          - ssh_file.stat.mode == '0600'
+          - ssh_file.stat.uid == 29123
+          - ssh_file.stat.gid == 29123
+          - sudo_file.stat.mode == '0440'
+          - sudo_file.stat.uid == 0
+          - sudo_result.stdout == '0'
