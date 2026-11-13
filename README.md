@@ -203,6 +203,177 @@ For each host, define `users_mgmt_host_users` either in the inventory or in its
 `host_vars` file. If both define it, the `host_vars` value takes precedence and
 replaces the inventory list; the two host-specific lists are not combined.
 
+### General rule for inventory overrides
+
+Use the same rule for any supported account field: define a variable in the
+inventory, reference it in the shared definition, and provide the common value
+with `default(...)`.
+
+```text
+account field: "{{ override_variable | default(common_value) }}"
+```
+
+For account settings, use `<account_name>_<field_name>` as the override variable
+name. For example, `user01_shell` controls `user01.shell`, `user01_groups`
+controls `user01.groups`, and `user01_sudo` controls `user01.sudo`. This naming
+convention makes the examples consistent; it is not an automatic role feature.
+Every overridable field needs an explicit reference in the shared definition.
+
+For Ansible 2.10–2.18, enable native Jinja types before using these examples with
+numeric fields such as `uid`. Otherwise templated numbers can become strings,
+which this role's validation rejects:
+
+```bash
+export ANSIBLE_JINJA2_NATIVE=true
+```
+
+Ansible-core 2.19 and later always use native types; this setting is unnecessary
+there. See the [Ansible 2.19 templating changes](https://docs.ansible.com/projects/ansible/latest/porting_guides/porting_guide_core_2.19.html).
+
+#### 1. Define common values in group_vars/all.yml
+
+This file contains variables directly, without an `all:` wrapper. Keep common
+values inside `default(...)` so inventory variables can supply overrides:
+
+```yaml
+---
+users_mgmt_common_users:
+  - name: user01
+    state: "{{ user01_state | default('present') }}"
+    uid: "{{ user01_uid | default(2001) }}"
+    groups: "{{ user01_groups | default(['operations']) }}"
+    append: "{{ user01_append | default(true) }}"
+    shell: "{{ user01_shell | default('/bin/bash') }}"
+    ssh_keys: "{{ user01_ssh_keys | default(['ssh-ed25519 <COMMON_BASE64> user01@common']) }}"
+    sudo: "{{ user01_sudo | default(['/usr/bin/id']) }}"
+    sudo_nopasswd: "{{ user01_sudo_nopasswd | default(false) }}"
+
+users_mgmt_users: "{{ users_mgmt_common_users + (users_mgmt_host_users | default([])) }}"
+
+users_mgmt_groups: "{{ env_users_mgmt_groups | default([{'name': 'operations', 'gid': 2000}]) }}"
+users_mgmt_protected_users: "{{ env_users_mgmt_protected_users | default(['ansible']) }}"
+```
+
+The same expression works for the other fields listed in the Variables section:
+`group`, `comment`, `home`, `create_home`, `password_lock`, `expires`, and so on.
+Use the documented type and an appropriate common value for each field. Leave
+fields out when they should not be managed. Password overrides must contain
+supported password hashes stored with Ansible Vault.
+
+Role-level settings follow the same rule. In this example,
+`env_users_mgmt_groups` supplies `users_mgmt_groups`, and
+`env_users_mgmt_protected_users` supplies `users_mgmt_protected_users`.
+These override variables are referenced explicitly; the role itself reads the
+final `users_mgmt_*` settings.
+
+#### 2. Override only the values that differ in inventory.yml
+
+For a production inventory, put environment-wide values under **`all.vars`**:
+
+```yaml
+---
+all:
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+    user01_uid: 3001
+    user01_groups: [operations, wheel]
+    user01_append: false
+    user01_ssh_keys:
+      - "ssh-ed25519 <PRODUCTION_BASE64> user01@prod"
+    user01_sudo:
+      - /usr/bin/systemctl restart nginx.service
+    user01_sudo_nopasswd: false
+
+    env_users_mgmt_protected_users:
+      - ansible
+      - emergency_admin
+
+  hosts:
+    prod01.example.com: {}
+    prod02.example.com: {}
+```
+
+Replace the public key placeholders with complete public key lines before
+applying this example. The restart command requires the service to exist.
+The inventory filename does not select settings automatically: its variables
+provide the values. In this example:
+
+| Setting | Common value | Production result |
+| --- | --- | --- |
+| `uid` | `2001` | `3001` |
+| `groups` | `[operations]` | `[operations, wheel]` |
+| `append` | `true` | `false` |
+| `shell` | `/bin/bash` | `/bin/bash`: no override supplied |
+| `ssh_keys` | Common public key | Production public key |
+| `sudo` | `/usr/bin/id` | Restart `nginx.service` |
+| `sudo_nopasswd` | `false` | `false` |
+| `users_mgmt_groups` | `operations` with GID `2000` | Unchanged: no override supplied |
+| `users_mgmt_protected_users` | `[ansible]` | `[ansible, emergency_admin]` |
+
+Lists replace their common values. For example, `user01_groups: [wheel]` would
+select `[wheel]`, not `[operations, wheel]`. The `append` field independently
+controls whether existing supplementary memberships on the server are retained.
+Other sudoers policies and group-based permissions still apply.
+
+#### 3. Use the same variable at the required scope
+
+| Location | Scope |
+| --- | --- |
+| Inventory `all.vars` | Every host in that inventory |
+| Inventory `all.children.<group>.vars` | Hosts in that group |
+| Inventory `all.hosts.<hostname>` | That inventory hostname only |
+| `host_vars/<hostname>.yml` next to the playbook | That inventory hostname only |
+
+Within these scopes, host values override group values, and child group values
+override parent group values. The playbook's `host_vars` file takes precedence
+over the same host variable defined directly in inventory. Keep fallback values
+in the field expressions: defining the override variable again in the
+playbook's `group_vars/all.yml` can override its value from inventory `all.vars`.
+
+All values keep their YAML types:
+
+| Type | Inventory example |
+| --- | --- |
+| String | `user01_shell: /bin/bash` |
+| Integer | `user01_uid: 3001` |
+| Boolean | `user01_append: false` |
+| List of strings | `user01_groups: [operations, wheel]` |
+| List of mappings | `env_users_mgmt_groups: [{name: operations, gid: 2000}]` |
+
+Use unquoted `true` / `false` for booleans and YAML lists for list fields.
+Quote Jinja expressions that start a YAML value. With native Jinja enabled as
+described above, Ansible preserves the type of the referenced list, number, or
+boolean.
+
+#### 4. Distinguish missing values from explicit values
+
+`default(common_value)` uses the common value only when the override variable
+is undefined. To use the common value, omit the override variable entirely.
+
+| Override value | Result |
+| --- | --- |
+| Variable omitted | Use the common value from `default(...)` |
+| `false` | Keep `false` |
+| `[]` | Keep an empty list |
+| Empty string | Keep the empty string; the target field must support it |
+| `null` | Keep `null`; it does not request the common value and can fail validation |
+
+For example, `user01_ssh_keys: []` removes all keys from the managed
+`authorized_keys`, while omitting `user01_ssh_keys` uses the common keys.
+`user01_sudo: []` removes the role-owned sudo policy. Avoid `default(..., true)`
+for this pattern because it would replace explicit `false`, empty lists, and
+other false-like values with the common value.
+
+With these example definitions saved in the supplied project layout, inspect
+hosts and preview the changes before applying them:
+
+```bash
+ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml --list-hosts
+ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml --check
+ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml
+```
+
 ## Variables
 
 `users_mgmt_groups` is a list of dictionaries:
