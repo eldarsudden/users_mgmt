@@ -1,0 +1,9 @@
+---
+# Additional accounts for this inventory hostname only.
+users_mgmt_host_users:
+  - name: app_operator
+    state: present
+    uid: 2002
+    group: operations
+    comment: Application operator on el10.example.com
+    shell: /bin/bash

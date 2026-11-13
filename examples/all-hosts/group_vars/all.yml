@@ -4,10 +4,13 @@ users_mgmt_groups:
   - name: operations
     gid: 2000
 
-users_mgmt_users:
+users_mgmt_common_users:
   - name: deploy
     state: present
     uid: 2001
     group: operations
     comment: Shared account for all inventory hosts
     shell: /bin/bash
+
+# Keep common accounts when a host defines extra accounts in inventory or host_vars.
+users_mgmt_users: "{{ users_mgmt_common_users + (users_mgmt_host_users | default([])) }}"

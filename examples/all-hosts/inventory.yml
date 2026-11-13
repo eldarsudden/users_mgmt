@@ -3,5 +3,18 @@ all:
   vars:
     ansible_python_interpreter: /usr/bin/python3
   hosts:
-    el9.example.com: {}
+    el9.example.com:
+      users_mgmt_host_users:
+        - name: audit_reader
+          state: present
+          uid: 2003
+          group: operations
+          comment: Audit reader on el9.example.com
+          shell: /bin/bash
+        - name: backup_operator
+          state: present
+          uid: 2004
+          group: operations
+          comment: Backup operator on el9.example.com
+          shell: /bin/bash
     el10.example.com: {}

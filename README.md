@@ -30,14 +30,16 @@ example in this repository uses the following layout:
 examples/all-hosts/
 ├── playbook.yml
 ├── inventory.yml
-└── group_vars/
-    └── all.yml
+├── group_vars/
+│   └── all.yml
+└── host_vars/
+    └── el10.example.com.yml
 ```
 
 ### Playbook
 
 The [playbook](examples/all-hosts/playbook.yml) uses `hosts: all` to apply the
-role to every host in the selected inventories. The `all` group exists
+role to every host in the inventory. The `all` group exists
 automatically; hosts do not need to belong to another named group. Use this
 example with EL9/EL10 hosts supported by the role.
 
@@ -53,9 +55,10 @@ example with EL9/EL10 hosts supported by the role.
 ### Where user definitions are stored
 
 **Store the account definitions in `group_vars/all.yml` next to the playbook.**
-Ansible loads this file automatically for every inventory host, including when
-multiple inventories are supplied. The role's `defaults/main.yml` only contains
-empty default lists.
+Ansible loads this file automatically for every inventory host. In this example,
+`users_mgmt_common_users` defines shared accounts, and `users_mgmt_users` combines
+them with optional `users_mgmt_host_users` from each host's variables. The role
+receives the resulting list. Its `defaults/main.yml` only contains empty defaults.
 
 The supplied [group_vars/all.yml](examples/all-hosts/group_vars/all.yml):
 
@@ -66,21 +69,24 @@ users_mgmt_groups:
   - name: operations
     gid: 2000
 
-users_mgmt_users:
+users_mgmt_common_users:
   - name: deploy
     state: present
     uid: 2001
     group: operations
     comment: Shared account for all inventory hosts
     shell: /bin/bash
+
+# Keep common accounts when a host defines extra accounts in inventory or host_vars.
+users_mgmt_users: "{{ users_mgmt_common_users + (users_mgmt_host_users | default([])) }}"
 ```
 
 | Artifact | Contents |
 | --- | --- |
-| `inventory.yml` | Hosts and connection settings |
+| `inventory.yml` | Hosts, connection settings, and optional per-host account lists |
 | `group_vars/all.yml` | Shared user and group definitions, SSH key references, sudo rules, and optional Vault-encrypted variables |
 | `public_keys/*.pub` | Optional public SSH keys referenced by `ssh_keys` |
-| `host_vars/<inventory_hostname>.yml` | Optional settings specific to one host |
+| `host_vars/<inventory_hostname>.yml` | Additional accounts and settings specific to one host |
 
 Keep these artifacts in your Ansible project repository. On managed hosts, the
 role applies them to the local account database (`/etc/passwd`, `/etc/shadow`,
@@ -88,12 +94,12 @@ role applies them to the local account database (`/etc/passwd`, `/etc/shadow`,
 does not maintain a separate user database. Add SSH keys or a Vault-backed
 password hash when login access is required.
 
-More specific group or host variables can override values from `group_vars/all.yml`.
-Lists are replaced rather than merged. The default empty lists leave users and
-groups unchanged. The role manages only explicitly listed entries; removing an
-entry from a list does not delete it from the host.
+The example explicitly concatenates common and host-specific user lists because
+Ansible does not merge lists automatically. The default empty lists leave users
+and groups unchanged. The role manages only explicitly listed entries; removing
+an entry from a list does not delete it from the host.
 
-### Run with one YAML inventory
+### Run with the YAML inventory
 
 The supplied [inventory.yml](examples/all-hosts/inventory.yml) defines the target hosts:
 
@@ -103,7 +109,20 @@ all:
   vars:
     ansible_python_interpreter: /usr/bin/python3
   hosts:
-    el9.example.com: {}
+    el9.example.com:
+      users_mgmt_host_users:
+        - name: audit_reader
+          state: present
+          uid: 2003
+          group: operations
+          comment: Audit reader on el9.example.com
+          shell: /bin/bash
+        - name: backup_operator
+          state: present
+          uid: 2004
+          group: operations
+          comment: Backup operator on el9.example.com
+          shell: /bin/bash
     el10.example.com: {}
 ```
 
@@ -117,58 +136,72 @@ ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook
 
 `--limit` further restricts the targeted hosts even when the play uses `hosts: all`.
 
-### Run with multiple YAML inventories
+### Add an account list directly in inventory.yml
 
-Pass one `-i` option per inventory. The additional
-[development inventory](examples/inventories/dev.yml) and
-[production inventory](examples/inventories/prod.yml) use distinct hostnames.
-Both receive the account definitions from
-`examples/all-hosts/group_vars/all.yml` because the same playbook is used.
+In the inventory above, `users_mgmt_host_users` is nested under
+`all.hosts.el9.example.com`. This list adds `audit_reader` and `backup_operator`
+only to that host. The expression in `group_vars/all.yml` also keeps the common
+`deploy` account. Each list item supports the user fields documented below.
 
-```bash
-# Review the combined target list.
-ansible-playbook \
-  -i examples/inventories/dev.yml \
-  -i examples/inventories/prod.yml \
-  examples/all-hosts/playbook.yml --list-hosts
-
-# Preview changes across both inventories.
-ansible-playbook \
-  -i examples/inventories/dev.yml \
-  -i examples/inventories/prod.yml \
-  examples/all-hosts/playbook.yml --check
-
-# Apply the shared account definitions to both environments.
-ansible-playbook \
-  -i examples/inventories/dev.yml \
-  -i examples/inventories/prod.yml \
-  examples/all-hosts/playbook.yml
-```
-
-To load every YAML inventory in the supplied directory, use the directory as the
-inventory source:
+To apply this list only to `el9.example.com`:
 
 ```bash
-ansible-playbook -i examples/inventories/ examples/all-hosts/playbook.yml --list-hosts
-ansible-playbook -i examples/inventories/ examples/all-hosts/playbook.yml
+ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml --limit el9.example.com --check
+ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml --limit el9.example.com
 ```
 
-Inventory sources are merged: a repeated inventory hostname identifies one host,
-whose variables may be overridden by later sources. If separate environments
-reuse the same inventory hostnames for different machines, run them separately:
+### Add accounts to a specific host through host_vars
+
+Define extra accounts in
+[host_vars/el10.example.com.yml](examples/all-hosts/host_vars/el10.example.com.yml).
+The filename must match the inventory hostname exactly:
+
+```yaml
+---
+# Additional accounts for this inventory hostname only.
+users_mgmt_host_users:
+  - name: app_operator
+    state: present
+    uid: 2002
+    group: operations
+    comment: Application operator on el10.example.com
+    shell: /bin/bash
+```
+
+With the supplied inventory, a normal playbook run manages:
+
+| Host | Accounts |
+| --- | --- |
+| `el9.example.com` | `deploy`, `audit_reader`, `backup_operator` |
+| `el10.example.com` | `deploy`, `app_operator` |
+
+The `operations` group is inherited from `group_vars/all.yml`. The expression in
+that file combines the common `deploy` account with the host-specific accounts
+defined in the inventory or `host_vars`. These helper variables belong to the example; the role
+itself reads `users_mgmt_users`. Account names must remain unique in the combined
+list.
+
+To apply the configuration only to `el10.example.com`, use the same inventory
+and playbook with `--limit`:
 
 ```bash
-for inventory in examples/inventories/*.yml; do
-  ansible-playbook -i "$inventory" examples/all-hosts/playbook.yml || break
-done
+# Review the selected host.
+ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml --limit el10.example.com --list-hosts
+
+# Preview the changes on that host.
+ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml --limit el10.example.com --check
+
+# Apply the common and host-specific accounts on that host.
+ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml --limit el10.example.com
 ```
 
-For different account lists per environment, use `group_vars/development.yml`
-and `group_vars/production.yml` next to the playbook. The supplied inventories
-define the corresponding groups. Their values override those inherited from
-`all`; provide complete user and group lists for each environment that overrides
-them. Do not define conflicting user lists for the shared `all` group in
-inventories that will be merged together.
+`--limit` selects hosts, not individual accounts. The limited run manages both
+`deploy` and `app_operator` on `el10.example.com`; other inventory hosts are not
+processed. A run without `--limit` still applies `app_operator` only to its host.
+
+For each host, define `users_mgmt_host_users` either in the inventory or in its
+`host_vars` file. If both define it, the `host_vars` value takes precedence and
+replaces the inventory list; the two host-specific lists are not combined.
 
 ## Variables
 
@@ -274,10 +307,14 @@ On a configured host, `--check` reports expected changes without applying them.
 
 ## Configuration examples
 
-The following snippets are independent examples of variables for
-`group_vars/all.yml` or a role's `vars` section. Choose the entries you need
-and combine them into a single `users_mgmt_users` list and, where applicable,
-a single `users_mgmt_groups` list. Repeating a YAML variable does not merge lists.
+The following snippets show the role input `users_mgmt_users` directly. In the
+supplied example, put these account entries under `users_mgmt_common_users` in
+`group_vars/all.yml` for every host, or under `users_mgmt_host_users` in a
+`host_vars/<inventory_hostname>.yml` file or under the host in `inventory.yml` for
+one host. Keep the expression that
+builds `users_mgmt_users` so the two lists are combined. Define shared groups
+under `users_mgmt_groups` in `group_vars/all.yml`. Repeating a YAML variable does
+not merge lists.
 
 ### Create a regular user
 
@@ -367,10 +404,11 @@ ansible-vault encrypt_string --stdin-name vault_alice_password_hash
 
 Enter the hash on standard input and finish with EOF. Add the generated encrypted
 variable to `examples/all-hosts/group_vars/all.yml` and reference it from the
-account definition in the same file:
+common account definition in the same file. Keep the `users_mgmt_users`
+composition expression shown above:
 
 ```yaml
-users_mgmt_users:
+users_mgmt_common_users:
   - name: alice
     password: "{{ vault_alice_password_hash }}"
     update_password: always
