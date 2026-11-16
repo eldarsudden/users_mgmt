@@ -1,6 +1,8 @@
 ---
-# Additional accounts for this inventory hostname only.
+# Overrides and additional accounts for this inventory hostname only.
 users_mgmt_host_users:
+  - name: deploy
+    comment: Deployment account on el10.example.com
   - name: app_operator
     state: present
     uid: 2002

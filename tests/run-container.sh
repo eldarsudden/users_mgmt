@@ -36,7 +36,6 @@ fi
 export ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3
 cd /work/users_mgmt
 ansible-playbook -i tests/inventory.yml tests/syntax.yml --syntax-check
-python tests/test_validation.py
-python tests/test_templates.py
+python -m unittest discover -s tests -p 'test_*.py'
 python tests/integration/run.py
 CONTAINER

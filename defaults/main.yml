@@ -1,7 +1,13 @@
 ---
 # Only explicitly listed accounts and groups are managed.
 users_mgmt_groups: []
-users_mgmt_users: []
+users_mgmt_common_users: []
+users_mgmt_env_users: []
+users_mgmt_host_users: []
+
+# Match accounts by name; later lists replace only explicitly supplied fields.
+users_mgmt_users: >-
+  {{ users_mgmt_common_users | users_mgmt_merge_users(users_mgmt_env_users, users_mgmt_host_users) }}
 
 # Additional accounts which this role must never modify. root is always protected.
 users_mgmt_protected_users: []

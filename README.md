@@ -1,7 +1,8 @@
 # users_mgmt
 
 An Ansible role for managing local users on RHEL and compatible EL9/EL10 systems.
-Uses only `ansible.builtin`; no additional collections are required.
+Uses `ansible.builtin` modules and a bundled filter for merging account definitions.
+No additional collections are required.
 
 ## Compatibility
 
@@ -55,10 +56,11 @@ example with EL9/EL10 hosts supported by the role.
 ### Where user definitions are stored
 
 **Store the account definitions in `group_vars/all.yml` next to the playbook.**
-Ansible loads this file automatically for every inventory host. In this example,
-`users_mgmt_common_users` defines shared accounts, and `users_mgmt_users` combines
-them with optional `users_mgmt_host_users` from each host's variables. The role
-receives the resulting list. Its `defaults/main.yml` only contains empty defaults.
+Ansible loads this file automatically for every inventory host. Define shared
+accounts in `users_mgmt_common_users`, environment overrides in
+`users_mgmt_env_users`, and host overrides in `users_mgmt_host_users`. All three
+use the same list of account records. The role builds `users_mgmt_users` by
+matching records by `name`, in this order: **common → environment → host**.
 
 The supplied [group_vars/all.yml](examples/all-hosts/group_vars/all.yml):
 
@@ -76,9 +78,6 @@ users_mgmt_common_users:
     group: operations
     comment: Shared account for all inventory hosts
     shell: /bin/bash
-
-# Keep common accounts when a host defines extra accounts in inventory or host_vars.
-users_mgmt_users: "{{ users_mgmt_common_users + (users_mgmt_host_users | default([])) }}"
 ```
 
 | Artifact | Contents |
@@ -94,10 +93,11 @@ role applies them to the local account database (`/etc/passwd`, `/etc/shadow`,
 does not maintain a separate user database. Add SSH keys or a Vault-backed
 password hash when login access is required.
 
-The example explicitly concatenates common and host-specific user lists because
-Ansible does not merge lists automatically. The default empty lists leave users
-and groups unchanged. The role manages only explicitly listed entries; removing
-an entry from a list does not delete it from the host.
+For a matching `name`, a later list replaces only the fields it specifies.
+Omitted fields keep their previous values, and new names add accounts. The role
+replaces field values completely: an SSH key list replaces the previous key list.
+Empty source lists leave earlier account definitions intact. Removing a record
+from a source list does not delete the account; use `state: absent` explicitly.
 
 ### Run with the YAML inventory
 
@@ -108,6 +108,9 @@ The supplied [inventory.yml](examples/all-hosts/inventory.yml) defines the targe
 all:
   vars:
     ansible_python_interpreter: /usr/bin/python3
+    users_mgmt_env_users:
+      - name: deploy
+        comment: Deployment account for this inventory
   hosts:
     el9.example.com:
       users_mgmt_host_users:
@@ -140,8 +143,10 @@ ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook
 
 In the inventory above, `users_mgmt_host_users` is nested under
 `all.hosts.el9.example.com`. This list adds `audit_reader` and `backup_operator`
-only to that host. The expression in `group_vars/all.yml` also keeps the common
-`deploy` account. Each list item supports the user fields documented below.
+only to that host. The role also keeps the common `deploy` account, with the
+comment from `users_mgmt_env_users`. The same list can override an existing
+account: specify its `name` and just the fields to change. Each list item supports
+the user fields documented below.
 
 To apply this list only to `el9.example.com`:
 
@@ -158,8 +163,10 @@ The filename must match the inventory hostname exactly:
 
 ```yaml
 ---
-# Additional accounts for this inventory hostname only.
+# Overrides and additional accounts for this inventory hostname only.
 users_mgmt_host_users:
+  - name: deploy
+    comment: Deployment account on el10.example.com
   - name: app_operator
     state: present
     uid: 2002
@@ -175,11 +182,11 @@ With the supplied inventory, a normal playbook run manages:
 | `el9.example.com` | `deploy`, `audit_reader`, `backup_operator` |
 | `el10.example.com` | `deploy`, `app_operator` |
 
-The `operations` group is inherited from `group_vars/all.yml`. The expression in
-that file combines the common `deploy` account with the host-specific accounts
-defined in the inventory or `host_vars`. These helper variables belong to the example; the role
-itself reads `users_mgmt_users`. Account names must remain unique in the combined
-list.
+The `operations` group is inherited from `group_vars/all.yml`. On both hosts,
+`deploy` keeps its common UID, primary group, and shell. Its environment comment
+is used on `el9.example.com`; the host comment takes precedence on
+`el10.example.com`. Repeating a name across different source lists is how an
+account is overridden. Repeating a name within one source list is rejected.
 
 To apply the configuration only to `el10.example.com`, use the same inventory
 and playbook with `--limit`:
@@ -203,178 +210,162 @@ For each host, define `users_mgmt_host_users` either in the inventory or in its
 `host_vars` file. If both define it, the `host_vars` value takes precedence and
 replaces the inventory list; the two host-specific lists are not combined.
 
-### General rule for inventory overrides
+### Override account records using the same structure as common
 
-Use the same rule for any supported account field: define a variable in the
-inventory, reference it in the shared definition, and provide the common value
-with `default(...)`.
+Use the same account fields at every level. Environment and host records need
+only `name` plus the fields that differ. No per-user variables or Jinja fallback
+expressions are needed.
 
-```text
-account field: "{{ override_variable | default(common_value) }}"
-```
+#### 1. Define complete common records in group_vars/all.yml
 
-For account settings, use `<account_name>_<field_name>` as the override variable
-name. For example, `user01_shell` controls `user01.shell`, `user01_groups`
-controls `user01.groups`, and `user01_sudo` controls `user01.sudo`. This naming
-convention makes the examples consistent; it is not an automatic role feature.
-Every overridable field needs an explicit reference in the shared definition.
-
-For Ansible 2.10–2.18, enable native Jinja types before using these examples with
-numeric fields such as `uid`. Otherwise templated numbers can become strings,
-which this role's validation rejects:
-
-```bash
-export ANSIBLE_JINJA2_NATIVE=true
-```
-
-Ansible-core 2.19 and later always use native types; this setting is unnecessary
-there. See the [Ansible 2.19 templating changes](https://docs.ansible.com/projects/ansible/latest/porting_guides/porting_guide_core_2.19.html).
-
-#### 1. Define common values in group_vars/all.yml
-
-This file contains variables directly, without an `all:` wrapper. Keep common
-values inside `default(...)` so inventory variables can supply overrides:
+For example, a shared list for four users with `wheel` membership and common
+SSH keys looks like this. Replace the public key placeholders before applying:
 
 ```yaml
 ---
 users_mgmt_common_users:
-  - name: user01
-    state: "{{ user01_state | default('present') }}"
-    uid: "{{ user01_uid | default(2001) }}"
-    groups: "{{ user01_groups | default(['operations']) }}"
-    append: "{{ user01_append | default(true) }}"
-    shell: "{{ user01_shell | default('/bin/bash') }}"
-    ssh_keys: "{{ user01_ssh_keys | default(['ssh-ed25519 <COMMON_BASE64> user01@common']) }}"
-    sudo: "{{ user01_sudo | default(['/usr/bin/id']) }}"
-    sudo_nopasswd: "{{ user01_sudo_nopasswd | default(false) }}"
-
-users_mgmt_users: "{{ users_mgmt_common_users + (users_mgmt_host_users | default([])) }}"
-
-users_mgmt_groups: "{{ env_users_mgmt_groups | default([{'name': 'operations', 'gid': 2000}]) }}"
-users_mgmt_protected_users: "{{ env_users_mgmt_protected_users | default(['ansible']) }}"
+  - name: kerimov
+    groups: [wheel]
+    ssh_keys:
+      - "ssh-ed25519 <COMMON_KERIMOV_BASE64> kerimov@common"
+  - name: zamuraev
+    groups: [wheel]
+    ssh_keys:
+      - "ssh-ed25519 <COMMON_ZAMURAEV_BASE64> zamuraev@common"
+  - name: sukovitsyn
+    groups: [wheel]
+    ssh_keys:
+      - "ssh-ed25519 <COMMON_SUKOVITSYN_BASE64> sukovitsyn@common"
+  - name: zharkova
+    groups: [wheel]
+    ssh_keys:
+      - "ssh-ed25519 <COMMON_ZHARKOVA_BASE64> zharkova@common"
 ```
 
-The same expression works for the other fields listed in the Variables section:
-`group`, `comment`, `home`, `create_home`, `password_lock`, `expires`, and so on.
-Use the documented type and an appropriate common value for each field. Leave
-fields out when they should not be managed. Password overrides must contain
-supported password hashes stored with Ansible Vault.
+This file contains variables directly, without an `all:` wrapper. The common
+list uses the role's normal defaults for any omitted account attributes.
 
-Role-level settings follow the same rule. In this example,
-`env_users_mgmt_groups` supplies `users_mgmt_groups`, and
-`env_users_mgmt_protected_users` supplies `users_mgmt_protected_users`.
-These override variables are referenced explicitly; the role itself reads the
-final `users_mgmt_*` settings.
+#### 2. Set environment differences under inventory all.vars
 
-#### 2. Override only the values that differ in inventory.yml
-
-For a production inventory, put environment-wide values under **`all.vars`**:
+For a production version of the same inventory, use `users_mgmt_env_users`:
 
 ```yaml
 ---
 all:
   vars:
     ansible_python_interpreter: /usr/bin/python3
-
-    user01_uid: 3001
-    user01_groups: [operations, wheel]
-    user01_append: false
-    user01_ssh_keys:
-      - "ssh-ed25519 <PRODUCTION_BASE64> user01@prod"
-    user01_sudo:
-      - /usr/bin/systemctl restart nginx.service
-    user01_sudo_nopasswd: false
-
-    env_users_mgmt_protected_users:
-      - ansible
-      - emergency_admin
-
+    users_mgmt_env_users:
+      - name: kerimov
+        ssh_keys:
+          - "ssh-ed25519 <PROD_KERIMOV_BASE64> kerimov@prod"
+      - name: zamuraev
+        ssh_keys:
+          - "ssh-ed25519 <PROD_ZAMURAEV_BASE64> zamuraev@prod"
+      - name: sukovitsyn
+        ssh_keys:
+          - "ssh-ed25519 <PROD_SUKOVITSYN_BASE64> sukovitsyn@prod"
+      - name: zharkova
+        ssh_keys:
+          - "ssh-ed25519 <PROD_ZHARKOVA_BASE64> zharkova@prod"
   hosts:
     prod01.example.com: {}
     prod02.example.com: {}
 ```
 
-Replace the public key placeholders with complete public key lines before
-applying this example. The restart command requires the service to exist.
-The inventory filename does not select settings automatically: its variables
-provide the values. In this example:
+All four accounts retain `groups: [wheel]` from common. Their production keys
+replace the common keys. If an account or field is omitted from the environment
+list, its common value is retained. The inventory filename does not select a
+mode automatically; its variables provide the differences.
 
-| Setting | Common value | Production result |
-| --- | --- | --- |
-| `uid` | `2001` | `3001` |
-| `groups` | `[operations]` | `[operations, wheel]` |
-| `append` | `true` | `false` |
-| `shell` | `/bin/bash` | `/bin/bash`: no override supplied |
-| `ssh_keys` | Common public key | Production public key |
-| `sudo` | `/usr/bin/id` | Restart `nginx.service` |
-| `sudo_nopasswd` | `false` | `false` |
-| `users_mgmt_groups` | `operations` with GID `2000` | Unchanged: no override supplied |
-| `users_mgmt_protected_users` | `[ansible]` | `[ansible, emergency_admin]` |
+The same rule applies to every supported account field. For example, an
+environment record can change a UID, shell, group membership, or sudo settings:
 
-Lists replace their common values. For example, `user01_groups: [wheel]` would
-select `[wheel]`, not `[operations, wheel]`. The `append` field independently
-controls whether existing supplementary memberships on the server are retained.
-Other sudoers policies and group-based permissions still apply.
-
-#### 3. Use the same variable at the required scope
-
-| Location | Scope |
-| --- | --- |
-| Inventory `all.vars` | Every host in that inventory |
-| Inventory `all.children.<group>.vars` | Hosts in that group |
-| Inventory `all.hosts.<hostname>` | That inventory hostname only |
-| `host_vars/<hostname>.yml` next to the playbook | That inventory hostname only |
-
-Within these scopes, host values override group values, and child group values
-override parent group values. The playbook's `host_vars` file takes precedence
-over the same host variable defined directly in inventory. Keep fallback values
-in the field expressions: defining the override variable again in the
-playbook's `group_vars/all.yml` can override its value from inventory `all.vars`.
-
-All values keep their YAML types:
-
-| Type | Inventory example |
-| --- | --- |
-| String | `user01_shell: /bin/bash` |
-| Integer | `user01_uid: 3001` |
-| Boolean | `user01_append: false` |
-| List of strings | `user01_groups: [operations, wheel]` |
-| List of mappings | `env_users_mgmt_groups: [{name: operations, gid: 2000}]` |
-
-Use unquoted `true` / `false` for booleans and YAML lists for list fields.
-Quote Jinja expressions that start a YAML value. With native Jinja enabled as
-described above, Ansible preserves the type of the referenced list, number, or
-boolean.
-
-#### 4. Distinguish missing values from explicit values
-
-`default(common_value)` uses the common value only when the override variable
-is undefined. To use the common value, omit the override variable entirely.
-
-| Override value | Result |
-| --- | --- |
-| Variable omitted | Use the common value from `default(...)` |
-| `false` | Keep `false` |
-| `[]` | Keep an empty list |
-| Empty string | Keep the empty string; the target field must support it |
-| `null` | Keep `null`; it does not request the common value and can fail validation |
-
-For example, `user01_ssh_keys: []` removes all keys from the managed
-`authorized_keys`, while omitting `user01_ssh_keys` uses the common keys.
-`user01_sudo: []` removes the role-owned sudo policy. Avoid `default(..., true)`
-for this pattern because it would replace explicit `false`, empty lists, and
-other false-like values with the common value.
-
-With these example definitions saved in the supplied project layout, inspect
-hosts and preview the changes before applying them:
-
-```bash
-ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml --list-hosts
-ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml --check
-ansible-playbook -i examples/all-hosts/inventory.yml examples/all-hosts/playbook.yml
+```yaml
+users_mgmt_env_users:
+  - name: kerimov
+    uid: 3001
+    shell: /bin/bash
+    groups: [wheel, operations]
+    append: false
+    sudo: [ALL]
+    sudo_nopasswd: false
 ```
 
+The referenced groups must exist or be declared in `users_mgmt_groups`. Only
+fields included in this record replace earlier values. Numeric, boolean, and
+list values are normal YAML values, so templated numeric fields and native Jinja
+configuration are not needed for these examples. Password fields must contain
+supported hashes stored with Ansible Vault.
+
+#### 3. Put host differences in users_mgmt_host_users
+
+Use the same structure directly under a host in the inventory, or in its
+`host_vars/<inventory_hostname>.yml` file:
+
+```yaml
+users_mgmt_host_users:
+  - name: kerimov
+    sudo: [ALL]
+    sudo_nopasswd: true
+  - name: local_operator
+    shell: /bin/bash
+```
+
+Here `kerimov` keeps his common groups and production keys, but his host sudo
+settings replace the environment settings. `local_operator` is an additional
+account on this host. The `sudo` list controls allowed commands; `sudo_nopasswd`
+controls password authentication for the role-owned policy. Other sudoers rules
+and group-based permissions still apply.
+
+#### Merge rules for the team
+
+| Rule | Result |
+| --- | --- |
+| Order | Common records, then environment records, then host records |
+| Matching `name` | Override only fields supplied by the later record |
+| Name not seen before | Add an account |
+| Omitted account or field | Keep the earlier definition |
+| `ssh_keys: []` | Replace the key list with an empty list, revoking managed SSH keys |
+| `sudo: []` | Remove the role-owned sudo policy |
+| `sudo_nopasswd: false` | Keep the explicit `false` value |
+| Any list field | Replace the whole list; do not append its elements |
+| `state: absent` | Explicitly delete that account using its merged deletion options |
+| Duplicate name within one source | Reject the source instead of hiding the duplicate |
+| `null` field | Keep `null`; normal field validation may reject it |
+
+To clear supplementary memberships, use `groups: []` together with
+`append: false`. Empty source lists such as `users_mgmt_env_users: []` mean no
+overrides; they do not delete the common accounts. Use explicit `state`, `remove`,
+and `force` values for deletion so inherited account settings are taken into
+account.
+
+These rules apply to account records. `users_mgmt_groups` and
+`users_mgmt_protected_users` remain ordinary role variables governed by Ansible
+variable precedence. An environment source list is one variable too: if multiple
+groups or files define `users_mgmt_env_users`, Ansible selects that source value
+before the role merges common, environment, and host records.
+
+If environments are separate inventory files, run them separately. Combining
+files that define different values for the same `all.vars.users_mgmt_env_users`
+can cause one environment's list to replace the other before merging.
+
 ## Variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `users_mgmt_common_users` | `[]` | Shared account records |
+| `users_mgmt_env_users` | `[]` | Environment account overrides and additions |
+| `users_mgmt_host_users` | `[]` | Host account overrides and additions |
+| `users_mgmt_users` | Merge of the three lists above | Final account list consumed by the role |
+
+The role uses its bundled `users_mgmt_merge_users` filter to merge the source
+lists. Existing playbooks may still supply `users_mgmt_users` directly. An
+explicit final list bypasses the layered merge, so do not set it when using the
+three source lists.
+
+When migrating from the previous example, remove the `users_mgmt_users`
+concatenation expression from `group_vars/all.yml`. Move per-user override
+variables into records under `users_mgmt_env_users` or `users_mgmt_host_users`.
 
 `users_mgmt_groups` is a list of dictionaries:
 
@@ -478,14 +469,11 @@ On a configured host, `--check` reports expected changes without applying them.
 
 ## Configuration examples
 
-The following snippets show the role input `users_mgmt_users` directly. In the
-supplied example, put these account entries under `users_mgmt_common_users` in
-`group_vars/all.yml` for every host, or under `users_mgmt_host_users` in a
-`host_vars/<inventory_hostname>.yml` file or under the host in `inventory.yml` for
-one host. Keep the expression that
-builds `users_mgmt_users` so the two lists are combined. Define shared groups
-under `users_mgmt_groups` in `group_vars/all.yml`. Repeating a YAML variable does
-not merge lists.
+The following snippets show the direct role input `users_mgmt_users`. For the
+layered structure, put the same records under `users_mgmt_common_users` for all
+hosts, `users_mgmt_env_users` under inventory `all.vars` for an environment, or
+`users_mgmt_host_users` for one host. The role merges these lists automatically.
+Define shared groups under `users_mgmt_groups` in `group_vars/all.yml`.
 
 ### Create a regular user
 
@@ -575,8 +563,7 @@ ansible-vault encrypt_string --stdin-name vault_alice_password_hash
 
 Enter the hash on standard input and finish with EOF. Add the generated encrypted
 variable to `examples/all-hosts/group_vars/all.yml` and reference it from the
-common account definition in the same file. Keep the `users_mgmt_users`
-composition expression shown above:
+common account definition in the same file:
 
 ```yaml
 users_mgmt_common_users:
@@ -690,8 +677,7 @@ python3.9 -m venv .venv210
 . .venv210/bin/activate
 pip install 'ansible-base==2.10.17' 'jinja2<3.1'
 ansible-playbook -i tests/inventory.yml tests/syntax.yml --syntax-check
-python tests/test_validation.py
-python tests/test_templates.py
+python -m unittest discover -s tests -p 'test_*.py'
 ```
 
 For integration tests on a disposable EL host:

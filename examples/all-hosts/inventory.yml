@@ -2,6 +2,9 @@
 all:
   vars:
     ansible_python_interpreter: /usr/bin/python3
+    users_mgmt_env_users:
+      - name: deploy
+        comment: Deployment account for this inventory
   hosts:
     el9.example.com:
       users_mgmt_host_users:
